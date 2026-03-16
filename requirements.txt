@@ -1,6 +1,6 @@
-pyTelegramBotAPI==4.14.0
-requests==2.31.0
-luhn==0.5.0
-flask==2.3.3
-beautifulsoup4==4.12.2
-gunicorn==21.2.0
+pyTelegramBotAPI
+requests
+luhn
+flask
+beautifulsoup4
+gunicorn  # For pro hosts
