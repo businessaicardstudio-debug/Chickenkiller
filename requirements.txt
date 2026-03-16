@@ -3,4 +3,4 @@ requests
 luhn
 flask
 beautifulsoup4
-gunicorn  # For pro hosts
+gunicorn
