@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+requests
+luhn
+flask
+beautifulsoup4
+
