@@ -1,6 +1,4 @@
 pyTelegramBotAPI
 requests
 luhn
-flask
 beautifulsoup4
-gunicorn
