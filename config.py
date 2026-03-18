@@ -1,7 +1,7 @@
 TOKEN = "8606980605:AAEeYDTXIz2nAtmy7lqnFaHC55_AHiKDc6c"
 ADMIN_IDS = [6383511175, 7869544426]  # Yours + friend
-API_ID = 12345678
-API_HASH = "your_hash"
+API_ID = 37759576
+API_HASH = "127d61a5a5d335c22a7448b79e319808"
 PROXY_SOURCES = [
     "https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
