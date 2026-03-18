@@ -1,0 +1,20 @@
+app = "cc-auto-checker"  # Unique name
+primary_region = "iad"
+
+[build]
+  builder = "paketobuildpacks/builder:base"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+[env]
+  BOT_TOKEN = "8606980605:AAEeYDTXIz2nAtmy7lqnFaHC55_AHiKDc6c"  # Or secrets
+
