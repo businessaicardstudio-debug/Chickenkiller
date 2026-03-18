@@ -1,4 +1,6 @@
-pyTelegramBotAPI
-requests
-luhn
+pyrogram==2.0.106
+TgCrypto==1.2.5
+requests==2.32.3
+aiohttp==3.10.1
+python-luhn
 beautifulsoup4
